@@ -31,8 +31,11 @@ from pathlib import Path
 
 from Pegasus.api import (
     Arch,
+    Directory,
+    FileServer,
     Job,
     Namespace,
+    Operation,
     Properties,
     Site,
     SiteCatalog,
@@ -62,6 +65,9 @@ def spawn_transformation(name, cpu, memory_gib, container=None):
         arch=Arch.X86_64,
     )
     t.add_profiles(Namespace.PEGASUS, key="gridstart", value="NoGridStart")
+    # Pegasus doesn't pass the transformation name as argv, so carry it in env —
+    # the wrapper uses it for the task_id and as the remote command name.
+    t.add_profiles(Namespace.ENV, key="PEGASUS_SPAWN_TASK_NAME", value=name)
     t.add_profiles(Namespace.ENV, key="SPAWN_WORKDIR_S3", value=WORKDIR_S3)
     t.add_profiles(Namespace.ENV, key="SPAWN_REGION", value=REGION)
     t.add_profiles(Namespace.ENV, key="SPAWN_TTL", value="1h")
@@ -75,9 +81,26 @@ def spawn_transformation(name, cpu, memory_gib, container=None):
 
 def main():
     # Site catalog: only the reserved local site (submit host). Everything runs
-    # its wrapper here; the wrapper fans out to spores.
+    # its wrapper here; the wrapper fans out to spores. Pegasus requires the site
+    # to declare a shared-scratch and local-storage directory (a FileServer URL
+    # prefix) even for local execution — that's where Pegasus stages job wrappers
+    # and collects outputs on the submit host.
+    workdir = os.environ.get("PEGASUS_LOCAL_WORKDIR", os.path.join(os.getcwd(), "work"))
+    scratch = os.path.join(workdir, "scratch")
+    storage = os.path.join(workdir, "storage")
+    os.makedirs(scratch, exist_ok=True)
+    os.makedirs(storage, exist_ok=True)
+
     sc = SiteCatalog()
     local = Site("local", arch=Arch.X86_64)
+    local.add_directories(
+        Directory(Directory.SHARED_SCRATCH, scratch).add_file_servers(
+            FileServer("file://" + scratch, Operation.ALL)
+        ),
+        Directory(Directory.LOCAL_STORAGE, storage).add_file_servers(
+            FileServer("file://" + storage, Operation.ALL)
+        ),
+    )
     sc.add_sites(local)
 
     tc = TransformationCatalog()
@@ -94,7 +117,13 @@ def main():
     wf.add_dependency(j1, children=[j2])
 
     props = Properties()
-    # Leave data transfer to the wrapper/spore (S3), not Pegasus, under NoGridStart.
+    # sharedfs data configuration: the wrapper runs ON the submit host (local
+    # site), which shares its filesystem with itself — so Pegasus should NOT wrap
+    # jobs in PegasusLite (the non-shared-fs, stage-worker-tools launcher).
+    # PegasusLite rejects gridstart=NoGridStart; sharedfs lets the job run under a
+    # plain launcher so our NoGridStart wrapper is honored. Real data movement to
+    # the spore is the wrapper's job (via S3), not Pegasus's.
+    props["pegasus.data.configuration"] = "sharedfs"
     props["pegasus.transfer.links"] = "true"
     props.write()
 

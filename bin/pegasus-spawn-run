@@ -116,10 +116,16 @@ def build_spec(task_name, job_args):
 
 
 def main(argv):
-    if len(argv) < 2:
-        _fail("usage: pegasus-spawn-run <task-name> [job-args...]")
-    task_name = argv[1]
-    job_args = argv[2:]
+    # Pegasus invokes the executable as `pegasus-spawn-run <job-args...>` — it does
+    # NOT pass the transformation name as an argument. The transformation name is
+    # provided out-of-band via PEGASUS_SPAWN_TASK_NAME (set per-transformation by
+    # the generator), which we use for the task_id and as argv[0] of the remote
+    # command. All of argv[1:] are the real job arguments.
+    task_name = os.environ.get("PEGASUS_SPAWN_TASK_NAME", "").strip()
+    if not task_name:
+        _fail("PEGASUS_SPAWN_TASK_NAME not set — the transformation must carry it "
+              "(add it as an env profile; see examples/workflow.py)")
+    job_args = argv[1:]
 
     spec = build_spec(task_name, job_args)
 
