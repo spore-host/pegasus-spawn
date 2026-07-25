@@ -20,6 +20,11 @@ export SPAWN_REGION="us-east-1"
 
 fail() { echo "COMPOSITION TEST FAILED: $*" >&2; exit 1; }
 
+# HTCondor with DAGMAN_USE_STRICT treats a node log file under /tmp as a FATAL
+# error, so run workflows from a non-/tmp scratch area under HOME.
+WORKROOT="${HOME:-/home/scitech}/pegwf-runs"
+mkdir -p "$WORKROOT"
+
 echo "=== starting HTCondor ==="
 sudo condor_master 2>/dev/null || condor_master
 for i in $(seq 1 30); do condor_q >/dev/null 2>&1 && { echo "condor up (${i}s)"; break; }; sleep 1; done
@@ -41,7 +46,7 @@ wait_for_dag() {  # $1 = rundir
 # Plan+submit the example and return ONLY the run dir (no extra echoes).
 plan_submit() {  # $1 = label ; uses env FAKE injection done by caller
     local label="$1" wfdir
-    wfdir="$(mktemp -d "/tmp/pegwf-${label}.XXXXXX")"
+    wfdir="$(mktemp -d "${WORKROOT}/pegwf-${label}.XXXXXX")"
     cp "${REPO}/examples/workflow.py" "$wfdir/workflow.py"
     ( cd "$wfdir" && python3 workflow.py >/dev/null \
         && pegasus-plan --sites local --output-sites local --dir "$wfdir/submit" --submit workflow.yml >/dev/null 2>&1 )
@@ -62,7 +67,7 @@ echo "TEST 1 PASS: DAG_STATUS_OK, both greet+farewell wrappers ran in order"
 echo "=== TEST 2: failure path — first job's wrapper exits nonzero, DAG should FAIL ==="
 # Deliver the fail trigger as a per-transformation env profile (submit-shell env
 # does NOT reach the job — HTCondor only passes declared profiles).
-FAILWF="$(mktemp -d /tmp/pegwf-fail.XXXXXX)"
+FAILWF="$(mktemp -d "${WORKROOT}/pegwf-fail.XXXXXX")"
 cp "${REPO}/examples/workflow.py" "$FAILWF/workflow.py"
 python3 - "$FAILWF/workflow.py" <<'PY'
 import sys
