@@ -45,7 +45,13 @@ from Pegasus.api import (
 )
 
 HERE = Path(__file__).resolve().parent
-WRAPPER = str(HERE.parent / "bin" / "pegasus-spawn-run")
+# The wrapper's absolute path is baked into the Transformation Catalog at plan
+# time, so it must point at the REAL installed wrapper — not a copy of this script
+# in a scratch dir. Override with PEGASUS_SPAWN_WRAPPER when running the generator
+# from somewhere other than the repo's examples/ dir (the CI test does this).
+WRAPPER = os.environ.get(
+    "PEGASUS_SPAWN_WRAPPER", str(HERE.parent / "bin" / "pegasus-spawn-run")
+)
 WORKDIR_S3 = os.environ.get("SPAWN_WORKDIR_S3", "s3://REPLACE-ME/pegasus-spawn")
 REGION = os.environ.get("SPAWN_REGION", "us-east-1")
 

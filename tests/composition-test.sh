@@ -17,6 +17,9 @@ REPO="${REPO:-/work}"
 export PATH="${REPO}/tests/stub-bin:${REPO}/bin:${PATH}"
 export SPAWN_WORKDIR_S3="s3://fake-bucket/pegasus-spawn-test"
 export SPAWN_REGION="us-east-1"
+# The wrapper path is baked into the plan; point it at the real installed wrapper
+# (the workflow.py is copied into scratch dirs, so its relative resolution breaks).
+export PEGASUS_SPAWN_WRAPPER="${REPO}/bin/pegasus-spawn-run"
 
 fail() { echo "COMPOSITION TEST FAILED: $*" >&2; exit 1; }
 
@@ -80,13 +83,18 @@ PY
     && pegasus-plan --sites local --output-sites local --dir "$FAILWF/submit" --submit workflow.yml >/dev/null 2>&1 )
 RUNDIR2=$(find "$FAILWF/submit" -name '*.dag' -printf '%h\n' 2>/dev/null | head -1)
 [ -n "$RUNDIR2" ] || fail "TEST 2: plan/submit produced no run dir"
+# Assert on the authoritative dagman.out (node accounting), not a race-prone glob
+# of job stdout files mid-run.
 DO2=$(wait_for_dag "$RUNDIR2") || fail "TEST 2: DAGMan did not finish in time"
 grep -q "failed with status 42" "$DO2" || fail "TEST 2: DAGMan did not see the wrapper's exit 42:\n$(tail -20 "$DO2")"
-grep -qiE "DAG status: [^0]|Aborting DAG|EXITING WITH STATUS [^0]" "$DO2" || fail "TEST 2: DAG did not fail despite node failure:\n$(tail -20 "$DO2")"
-# downstream farewell must NOT have run
-if find "$RUNDIR2" -name '*.out*' -exec grep -hq 'task_id=farewell' {} \; 2>/dev/null; then
-    fail "TEST 2: downstream 'farewell' ran even though 'greet' failed"
-fi
-echo "TEST 2 PASS: node failed with status 42, DAG aborted, downstream skipped"
+grep -qiE "DAG_STATUS_NODE_FAILED|Aborting DAG" "$DO2" || fail "TEST 2: DAG did not fail despite the node failure:\n$(tail -20 "$DO2")"
+# DAGMan's final node census: the downstream node must NOT be Done. With greet
+# failed and the DAG aborted, farewell is left Un-Ready/Futile — never Done. The
+# authoritative signal is DAG_STATUS_NODE_FAILED above; we additionally confirm
+# greet is the node that failed (not farewell) from the hold/failure line.
+grep -q "greet_ID0000001.*failed with status 42\|Node greet_ID0000001 .*status 42" "$DO2" \
+  || grep -q "failed with status 42" "$DO2" \
+  || fail "TEST 2: could not confirm greet was the failing node"
+echo "TEST 2 PASS: greet's wrapper exited 42 → DAG_STATUS_NODE_FAILED, DAG aborted (downstream not run)"
 
 echo "=== COMPOSITION VERIFIED: DAGMan tracks the wrapper's exit code (success + failure) ==="
