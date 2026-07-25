@@ -25,14 +25,16 @@ jobs:
         run: |
           docker run --rm --privileged \
             -v "${{ github.workspace }}:/work:ro" \
-            -e REPO=/work \
             pegasus-spawn-test \
             bash -lc '
               set -e
-              # Copy the read-only mount to a writable workspace (Pegasus writes
-              # a submit dir; the mount is ro).
+              # HTCondor is brought up by root, but it will NOT let root own jobs —
+              # so plan/submit must run as the non-root scitech user (created in the
+              # Dockerfile). Copy the read-only mount to a scitech-owned workspace.
+              sudo condor_master || condor_master
               cp -r /work /home/scitech/pegasus-spawn
-              # Pegasus API for the workflow generator.
-              pip3 install --quiet pegasus-wms.api || sudo pip3 install --quiet pegasus-wms.api
-              REPO=/home/scitech/pegasus-spawn bash /home/scitech/pegasus-spawn/tests/composition-test.sh
+              sudo chown -R scitech:scitech /home/scitech/pegasus-spawn 2>/dev/null || chown -R scitech /home/scitech/pegasus-spawn
+              pip3 install --quiet pegasus-wms.api 2>/dev/null || sudo pip3 install --quiet pegasus-wms.api || true
+              sudo -u scitech env REPO=/home/scitech/pegasus-spawn HOME=/home/scitech \
+                bash /home/scitech/pegasus-spawn/tests/composition-test.sh
             '
