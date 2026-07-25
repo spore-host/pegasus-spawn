@@ -1,0 +1,38 @@
+name: DAGMan composition test
+
+# Proves the one thing that needs a real Pegasus/HTCondor: that DAGMan runs the
+# pegasus-spawn-run wrapper as a workflow node, in dependency order, and tracks
+# node success/failure by the wrapper's exit code (with RETRY). A stub `spawn`
+# stands in for `spawn task run`, so NO AWS credentials and NO real instances are
+# involved — the test is free and hermetic.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  composition:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Pegasus + minicondor test image
+        run: docker build -t pegasus-spawn-test -f tests/Dockerfile .
+
+      - name: Run DAGMan composition test (stubbed spawn, no AWS)
+        run: |
+          docker run --rm --privileged \
+            -v "${{ github.workspace }}:/work:ro" \
+            -e REPO=/work \
+            pegasus-spawn-test \
+            bash -lc '
+              set -e
+              # Copy the read-only mount to a writable workspace (Pegasus writes
+              # a submit dir; the mount is ro).
+              cp -r /work /home/scitech/pegasus-spawn
+              # Pegasus API for the workflow generator.
+              pip3 install --quiet pegasus-wms.api || sudo pip3 install --quiet pegasus-wms.api
+              REPO=/home/scitech/pegasus-spawn bash /home/scitech/pegasus-spawn/tests/composition-test.sh
+            '

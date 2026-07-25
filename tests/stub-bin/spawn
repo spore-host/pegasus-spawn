@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# fake-spawn — a stub `spawn` for the DAGMan-composition CI test.
+#
+# The composition test proves ONE thing: that Pegasus/DAGMan runs our
+# pegasus-spawn-run wrapper as a node, in dependency order, and tracks node
+# success/failure by the wrapper's exit code (with RETRY). That is a pure
+# Pegasus↔wrapper↔DAGMan question — it needs NO real AWS. This stub stands in for
+# the real `spawn task run` so the test runs offline/free.
+#
+# Behavior:
+#   spawn task run --spec FILE [--wait] [...]  → echo the spec's task_id, then
+#     exit 0 normally, OR exit nonzero if FAKE_SPAWN_FAIL matches the task_id
+#     (used to prove DAGMan marks the node failed and RETRY fires).
+#   spawn version                              → print a version line.
+# Any other invocation → exit 0 (harmless).
+set -euo pipefail
+
+if [ "${1:-}" = "task" ] && [ "${2:-}" = "run" ]; then
+    # Find --spec FILE
+    spec=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --spec) spec="${2:-}"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    task_id="unknown"
+    if [ -n "$spec" ] && [ -f "$spec" ]; then
+        # Extract "task_id": "..." without requiring jq.
+        task_id=$(sed -n 's/.*"task_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$spec" | head -1)
+    fi
+    echo "fake-spawn: task run task_id=${task_id} (stub — no instance launched)"
+    # Fail the named task to exercise DAGMan failure/RETRY.
+    if [ -n "${FAKE_SPAWN_FAIL:-}" ] && [ "${FAKE_SPAWN_FAIL}" = "${task_id}" ]; then
+        echo "fake-spawn: simulating task failure for ${task_id}" >&2
+        exit 42
+    fi
+    exit 0
+fi
+
+if [ "${1:-}" = "version" ]; then
+    echo "fake-spawn (stub for pegasus-spawn composition test)"
+    exit 0
+fi
+
+exit 0

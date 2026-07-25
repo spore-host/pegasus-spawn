@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""pegasus-spawn-run — the per-job wrapper that runs one Pegasus job on an
+ephemeral spore.host EC2 instance, auto-terminated.
+
+This is the load-bearing seam of the pegasus-spawn adapter (spore-host, #TBD).
+Pegasus does NOT expose a pluggable per-task executor the way Nextflow/Snakemake
+do; it plans an abstract workflow into an HTCondor DAG and delegates execution to
+DAGMan. So instead of a custom scheduler/LRMS, we make the job's *executable* be
+this wrapper:
+
+  - The wrapper is registered as an INSTALLED transformation on the reserved
+    `local` site, so DAGMan runs it ON THE SUBMIT HOST (local universe) — right
+    next to DAGMan, never on a compute node.
+  - The wrapper translates the Pegasus job invocation (argv + the resource /
+    container / staging knobs passed via PEGASUS_SPAWN_* env) into a spawn
+    TaskSpec, then calls `spawn task run --spec … --wait`.
+  - `spawn task run` launches a purpose-sized spore, stages inputs from S3, runs
+    the real step, stages outputs back, writes a durable completion record, and
+    the instance self-terminates (on_complete=terminate + TTL backstop).
+  - The wrapper exits with the task's exit code. DAGMan tracks node success/
+    failure by that exit code (0=ok, nonzero=fail → RETRY), so retries and
+    monitoring work with no kickstart record required. Pair with
+    gridstart=NoGridStart + POST.SCOPE=none in the transformation catalog.
+
+First-party precedent: Pegasus already ships the HubZero `Distribute` gridstart,
+a submit-host wrapper that redirects a job to a PBS cluster (qsub + status poll).
+This is the same pattern, targeting an ephemeral spore instead of PBS.
+
+Config (env, set globally or per-transformation via `profile env` in the TC):
+  SPAWN_WORKDIR_S3   (required) s3://bucket/prefix — the work/exit-code bridge
+  SPAWN_REGION       AWS region to size/launch in (default: spawn's configured region)
+  SPAWN_TTL          per-task hard-deadline TTL (default 4h)
+  SPAWN_BIN          path to the spawn binary (default: spawn on PATH)
+  PEGASUS_SPAWN_CPU          vCPUs to size against (int)
+  PEGASUS_SPAWN_MEMORY_GIB   memory to size against (float)
+  PEGASUS_SPAWN_GPUS         GPU count (int)
+  PEGASUS_SPAWN_ARCH         x86_64 | arm64
+  PEGASUS_SPAWN_INSTANCE_TYPE  pin an exact instance type (overrides cpu/mem)
+  PEGASUS_SPAWN_CONTAINER      container image ref (digest preferred)
+  PEGASUS_SPAWN_PURCHASE       spot | on_demand
+  PEGASUS_SPAWN_INPUTS   ;-separated  s3src>localdest  pairs staged onto the spore
+  PEGASUS_SPAWN_OUTPUTS  ;-separated  localsrc>s3dest  pairs staged back
+
+Usage (as Pegasus sees it — pfn points here):
+  pegasus-spawn-run <task-name> [job-args...]
+"""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+
+def _fail(msg, code=2):
+    sys.stderr.write("pegasus-spawn-run: %s\n" % msg)
+    sys.exit(code)
+
+
+def _manifests(raw, forward):
+    """Parse a ;-separated list of 'a>b' pairs into TaskSpec manifest dicts.
+
+    forward=True  → inputs:  s3src>localdest
+    forward=False → outputs: localsrc>s3dest
+    """
+    out = []
+    for entry in filter(None, (e.strip() for e in (raw or "").split(";"))):
+        if ">" not in entry:
+            _fail("bad manifest entry %r (want 'src>dest')" % entry)
+        src, dest = (p.strip() for p in entry.split(">", 1))
+        if not src or not dest:
+            _fail("bad manifest entry %r (empty src or dest)" % entry)
+        out.append({"source": src, "destination": dest})
+    return out
+
+
+def build_spec(task_name, job_args):
+    """Translate this Pegasus job invocation into a spawn TaskSpec dict."""
+    workdir = os.environ.get("SPAWN_WORKDIR_S3", "").strip()
+    if not workdir:
+        _fail("SPAWN_WORKDIR_S3 is required (s3://bucket/prefix for the work bridge)")
+
+    # The command is the transformation name + the args Pegasus passed. The spore
+    # runs `<task-name> <args...>`; the transformation's real executable is
+    # expected to be present on the spore image (or delivered as a container).
+    command = [task_name] + list(job_args)
+
+    resources = {}
+    if os.environ.get("PEGASUS_SPAWN_INSTANCE_TYPE"):
+        resources["instance_type"] = os.environ["PEGASUS_SPAWN_INSTANCE_TYPE"]
+    if os.environ.get("PEGASUS_SPAWN_CPU"):
+        resources["cpu"] = int(os.environ["PEGASUS_SPAWN_CPU"])
+    if os.environ.get("PEGASUS_SPAWN_MEMORY_GIB"):
+        resources["memory_gib"] = float(os.environ["PEGASUS_SPAWN_MEMORY_GIB"])
+    if os.environ.get("PEGASUS_SPAWN_GPUS"):
+        resources["gpus"] = int(os.environ["PEGASUS_SPAWN_GPUS"])
+    if os.environ.get("PEGASUS_SPAWN_ARCH"):
+        resources["architecture"] = os.environ["PEGASUS_SPAWN_ARCH"]
+    if os.environ.get("PEGASUS_SPAWN_PURCHASE"):
+        resources["purchase"] = os.environ["PEGASUS_SPAWN_PURCHASE"]
+
+    spec = {
+        "task_id": task_name,
+        "command": command,
+        "resources": resources,
+        "inputs": _manifests(os.environ.get("PEGASUS_SPAWN_INPUTS"), forward=True),
+        "outputs": _manifests(os.environ.get("PEGASUS_SPAWN_OUTPUTS"), forward=False),
+        "lifecycle": {
+            "ttl": os.environ.get("SPAWN_TTL", "4h").strip() or "4h",
+            "on_complete": "terminate",
+        },
+    }
+    if os.environ.get("PEGASUS_SPAWN_CONTAINER"):
+        spec["container"] = os.environ["PEGASUS_SPAWN_CONTAINER"]
+    return spec
+
+
+def main(argv):
+    if len(argv) < 2:
+        _fail("usage: pegasus-spawn-run <task-name> [job-args...]")
+    task_name = argv[1]
+    job_args = argv[2:]
+
+    spec = build_spec(task_name, job_args)
+
+    spawn_bin = os.environ.get("SPAWN_BIN", "spawn")
+    region = os.environ.get("SPAWN_REGION", "").strip()
+
+    # Write the spec to a temp file for `spawn task run --spec`.
+    fd, spec_path = tempfile.mkstemp(prefix="pegasus-spawn-%s-" % task_name, suffix=".json")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(spec, f, indent=2)
+
+        cmd = [spawn_bin, "task", "run", "--spec", spec_path, "--wait"]
+        if region:
+            cmd += ["--region", region]
+
+        sys.stderr.write("pegasus-spawn-run: launching spore for task %r → %s\n"
+                         % (task_name, " ".join(spec.get("command", []))))
+        # Block until the spore finishes; propagate its exit code to DAGMan so the
+        # node's success/failure (and RETRY) is driven by the real step's result.
+        proc = subprocess.run(cmd)
+        return proc.returncode
+    finally:
+        try:
+            os.unlink(spec_path)
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
