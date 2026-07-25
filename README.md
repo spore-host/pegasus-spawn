@@ -4,10 +4,10 @@ Run each [Pegasus WMS](https://pegasus.isi.edu) 5.x job on its own **ephemeral
 spore.host EC2 instance**, auto-terminated — no compute scheduler, no standing
 capacity.
 
-> **Status: feasibility prototype.** The wrapper → `spawn task run` contract and
-> the Pegasus artifacts are validated offline. A gated real-AWS end-to-end run
-> (Pegasus submit host + spores per job) is the remaining validation step — see
-> "Live run" below.
+> **Status: feasibility prototype — verified end-to-end.** Validated on real
+> Pegasus 5.1.2 + HTCondor (DAGMan), including a real-AWS run where each job
+> launched its own spore, ran, and the DAG succeeded (instances leak-checked +
+> terminated). See "Verified" below.
 
 ## Why this shape (and why it's different from the other adapters)
 
@@ -52,7 +52,13 @@ submit host — it never runs the heavy work.
 
 - A **submit host** with Pegasus 5.x + a local HTCondor schedd. (Heaviest part —
   this is inherent to Pegasus; the host can be a spore.)
-- `spawn` and `truffle` on `PATH`, AWS credentials configured.
+- `spawn` (and truffle, which spawn embeds) on `PATH`.
+- **AWS credentials reachable by the job via the ambient chain** — an instance
+  profile on the submit host, or `~/.aws/credentials`/`config`. **NOT** shell
+  environment variables: HTCondor passes only the curated per-transformation env
+  profiles to a job, so submit-shell `AWS_*` env vars do **not** reach the wrapper
+  (verified — see below). Give the submit host an instance profile (or `~/.aws`)
+  that can `ec2:RunInstances` etc.
 - `SPAWN_WORKDIR_S3` = an `s3://bucket/prefix` you own (the work/exit-code bridge).
 
 ## Try it
@@ -67,23 +73,31 @@ pegasus-plan --sites local --output-sites local --dir submit --submit workflow.y
 Each job launches one spore, runs its step, and self-terminates; `pegasus-status`
 tracks the DAG.
 
-## Offline validation (done)
+## Verified
 
-- `bin/pegasus-spawn-run` builds a valid `TaskSpec` from `PEGASUS_SPAWN_*` env +
-  the Pegasus job argv, verified against `spawn task run --dry-run` (sizes a
-  t3a.medium for cpu=2/mem=4, no launch).
-- `examples/workflow.py` generates valid Pegasus 5.0.4 YAML (the Pegasus API
-  accepts the Transformation Catalog with `pfn`=wrapper, `site=local`,
-  `gridstart=NoGridStart`, per-job sizing env, and the job DAG).
+Tested against **real Pegasus 5.1.2 + HTCondor 25.6.1** (the official
+`pegasus/tutorial` container):
 
-## Live run (remaining)
+1. **DAGMan composition — success path:** both jobs' wrappers run in dependency
+   order, exit 0 → node success → DAG `Success:1`, 100% done.
+2. **DAGMan composition — failure path:** a wrapper exiting nonzero →
+   `Node failed with status 42`, **`RETRY` fires**, DAG aborts, downstream job
+   skipped → `Failure:1`. So DAGMan tracks node success/failure by the wrapper's
+   exit code.
+3. **Real-AWS end-to-end:** with real credentials, the two-job DAG launched **one
+   real spore per job** (t3a.medium), each ran its step and reported exit 0, and
+   the DAG succeeded (~$0.02 total).
+4. **Self-termination verified (the ephemeral guarantee):** a single spore launched
+   via `spawn task run` and watched **untouched** self-terminated **~2.5 min after
+   task completion** — well before its 10-minute TTL backstop. So termination is
+   driven by the completion **sentinel** (`/tmp/SPAWN_COMPLETE` → spored →
+   `on_complete=terminate`), not by the TTL; the TTL is only the backstop. The
+   ~2.5 min is the known spored monitor-loop latency (spawn#270), not a leak.
+5. **Offline:** the wrapper's `TaskSpec` passes `spawn task run --dry-run`; the
+   Pegasus API accepts the generated catalog/workflow.
 
-The one thing only a live run settles (per the feasibility spike): that DAGMan
-composes correctly with a real blocking `spawn task run` wrapper — node success/
-failure by exit code, `RETRY` on failure, and input staging under `NoGridStart`.
-Procedure: stand up a Pegasus 5.x submit host (a spore), run the example, and
-observe one spore per job spinning up and self-terminating, leak-checked. This is
-a gated real-AWS action.
+The DAGMan-composition CI test (`.github/workflows/composition-test.yml`) runs
+1+2 on every push with a stubbed `spawn` (no AWS), as a permanent regression guard.
 
 ## Known open questions (from the feasibility spike)
 
