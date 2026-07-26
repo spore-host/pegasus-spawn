@@ -12,7 +12,7 @@ capacity.
 ## Why this shape (and why it's different from the other adapters)
 
 The other spore.host adapters (nf-spawn, miniwdl-spawn, cwl-spawn, snakemake,
-spawn-airflow) hook each engine's **native per-task executor**. Pegasus has no
+airflow-spawn) hook each engine's **native per-task executor**. Pegasus has no
 such hook: `pegasus-plan` compiles an abstract workflow into an **HTCondor DAG**
 and delegates execution to **DAGMan** — there is no pluggable executor/LRMS
 plugin API.
