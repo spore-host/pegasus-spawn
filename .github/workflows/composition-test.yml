@@ -13,10 +13,25 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Reads two files; deliberately its OWN job rather than a step in `composition`,
+  # so a broken pin is reported in seconds instead of waiting on a Pegasus image
+  # build and a privileged HTCondor container.
+  ci-hygiene:
+    name: CI hygiene (action pins + Dependabot)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Assert actions are pinned and Dependabot bumps them
+        run: bash tests/ci-hygiene.sh
+
   composition:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to a commit SHA, not `@v4`: a tag is mutable, and
+      # actions/checkout@v6 really did move (df4cb1c → d23441a) with no signal to
+      # consumers. Dependabot bumps this pin (.github/dependabot.yml) so it stays
+      # current without being mutable; tests/ci-hygiene.sh keeps both true. (#1)
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Build Pegasus + minicondor test image
         run: docker build -t pegasus-spawn-test -f tests/Dockerfile .
