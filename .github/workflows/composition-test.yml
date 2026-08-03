@@ -20,9 +20,17 @@ jobs:
     name: CI hygiene (action pins + Dependabot)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Assert actions are pinned and Dependabot bumps them
         run: bash tests/ci-hygiene.sh
+
+      # The half that needs the network, so it can't live in the hermetic check
+      # above: does each pin's `# vX.Y.Z` actually name the tag its SHA carries?
+      # A wrong label is worse than none — it makes a major-version jump read as a
+      # routine same-line bump, which is how a checkout v6 -> v7.0.1 bump nearly
+      # landed in nf-spawn labelled `# v6`. Read-only (git ls-remote), no auth.
+      - name: Verify pin comments match their SHAs
+        run: ./scripts/verify-pins.sh
 
   composition:
     runs-on: ubuntu-latest
@@ -31,7 +39,7 @@ jobs:
       # actions/checkout@v6 really did move (df4cb1c → d23441a) with no signal to
       # consumers. Dependabot bumps this pin (.github/dependabot.yml) so it stays
       # current without being mutable; tests/ci-hygiene.sh keeps both true. (#1)
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build Pegasus + minicondor test image
         run: docker build -t pegasus-spawn-test -f tests/Dockerfile .

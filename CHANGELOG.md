@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A pin's version comment can no longer silently misstate what CI runs**
+  ([#1](https://github.com/spore-host/pegasus-spawn/issues/1)). The hygiene check
+  required only that *some* `# vN` comment be present, never that it was true — so
+  a bare `# v7` passed while the SHA it labelled was a different v7.x, and a wrong
+  label is worse than none: it makes a major-version jump read as a routine
+  same-line bump. That is not hypothetical; Dependabot bumped nf-spawn's
+  `checkout` pin to a **v7.0.1** SHA while leaving all five comments reading
+  `# v6`, and the same check passed it. Two complementary halves now:
+  `tests/ci-hygiene.sh` requires an exact `vX.Y.Z` (offline, hermetic), and a new
+  `scripts/verify-pins.sh` resolves each SHA against the tag its comment claims
+  and fails if they disagree (needs the network, so it stays out of the offline
+  check). Neither alone is sufficient — a bare label defeats the second, an exact
+  but false one defeats the first. Both comments here were `# v7` on a v7.0.1 SHA
+  and now read `# v7.0.1`.
+
 ### Security
 - **Pinned the one action ref to a commit SHA and added Dependabot to bump it**
   ([#1](https://github.com/spore-host/pegasus-spawn/issues/1)). `actions/checkout@v4`

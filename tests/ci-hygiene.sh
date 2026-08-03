@@ -39,13 +39,17 @@ unpinned=""
 while IFS= read -r ref; do
   [ -n "$ref" ] || continue
   case "$ref" in ./*) continue ;; esac  # local path, not a registry ref
-  grep -qE '^[^@[:space:]]+@[0-9a-f]{40}[[:space:]]+#[[:space:]]*v?[0-9]' <<<"$ref" \
+  grep -qE '^[^@[:space:]]+@[0-9a-f]{40}[[:space:]]+#[[:space:]]*v[0-9]+\.[0-9]+\.[0-9]+[[:space:]]*$' <<<"$ref" \
     || unpinned+="    $ref"$'\n'
 done <<<"$refs"
 
-[ -z "$unpinned" ] || fail "actions not pinned to a commit SHA with a version comment:
+[ -z "$unpinned" ] || fail "actions not pinned to a commit SHA with an EXACT vX.Y.Z comment:
 $unpinned
-A tag or branch is mutable, so the code CI runs can change with no commit here. Use:
+A tag or branch is mutable, so the code CI runs can change with no commit here.
+The comment must name an exact version, not a bare major: a bare \`# v7\` cannot be
+checked against the SHA and can silently misstate what CI runs. Dependabot bumped
+nf-spawn's checkout pin to a v7.0.1 SHA while leaving the comment reading \`# v6\`,
+and the old form of this check passed it. Use:
     uses: owner/action@<40-hex-sha> # vX.Y.Z"
 
 # --- 2. Something must bump those pins.
