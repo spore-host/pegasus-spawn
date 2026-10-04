@@ -24,6 +24,13 @@ jobs:
       - name: Assert actions are pinned and Dependabot bumps them
         run: bash tests/ci-hygiene.sh
 
+      # TaskSpec lifecycle unit check (#5). Lives in the fast job for the same
+      # reason as the pin check: it is offline and needs neither Pegasus nor AWS,
+      # so a regression in the cost cap is reported in seconds rather than after
+      # an image build and a privileged HTCondor container.
+      - name: Assert the TaskSpec lifecycle block (TTL + cost cap)
+        run: bash tests/lifecycle-test.sh
+
       # The half that needs the network, so it can't live in the hermetic check
       # above: does each pin's `# vX.Y.Z` actually name the tag its SHA carries?
       # A wrong label is worse than none — it makes a major-version jump read as a

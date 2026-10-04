@@ -7,7 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`SPAWN_COST_LIMIT`: a per-job spend cap** (#5). TTL was the only ceiling on a job,
+  defaulting to 4h, so a workflow of N jobs had a worst case of N × 4h × the instance
+  rate with no second belt. `spored` enforces TTL and cost **independently** — first
+  limit to fire wins — so this is a genuine second limit.
+  The failure it catches is a job that **hangs** rather than fails: it produces no exit
+  status for Pegasus to retry or fail on, so it bills until the TTL expires. Pegasus's
+  local-site throttling bounds *concurrency*, not spend, so it is not a substitute.
+  Emitted only when set and positive. A non-numeric value degrades to "bounded by TTL
+  only" with a warning rather than failing the job — it arrives as an environment string
+  and a typo shouldn't kill an otherwise-fine workflow. (`--cost-limit` became a compute
+  **+ storage** total in spawn 0.116.0.)
+
+- `tests/lifecycle-test.sh`, an offline unit check for the lifecycle block. It runs in
+  the fast CI job alongside the action-pin check, for the same reason: it needs neither
+  Pegasus nor AWS, so a regression in the cost cap is reported in seconds instead of
+  after an image build and a privileged HTCondor container.
+
+- Initial feasibility prototype. `bin/pegasus-spawn-run` — a per-job wrapper that
+  translates a Pegasus job invocation into a spawn `TaskSpec` and calls
+  `spawn task run --wait`, so a chosen Pegasus 5.x transformation runs on an
+  ephemeral spore.host instance (one per job, auto-terminated) using only
+  documented Pegasus seams (Transformation Catalog `pfn`=wrapper, `site=local`,
+  `gridstart=NoGridStart`) — no custom scheduler/LRMS.
+- `examples/workflow.py` — generates a two-job Pegasus 5.x workflow with
+  spawn-backed transformations (drop-in pattern: add these transformations to an
+  existing Pegasus workflow).
+- DAGMan-composition CI test (`tests/`): a real Pegasus 5.x + single-machine
+  HTCondor (minicondor) container runs the example under `pegasus-plan --submit`
+  with a stubbed `spawn` (no AWS), asserting DAGMan tracks node success/failure by
+  the wrapper's exit code (and RETRY on nonzero).
+
 ### Fixed
+
 - **A pin's version comment can no longer silently misstate what CI runs**
   ([#1](https://github.com/spore-host/pegasus-spawn/issues/1)). The hygiene check
   required only that *some* `# vN` comment be present, never that it was true — so
@@ -24,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and now read `# v7.0.1`.
 
 ### Security
+
 - **Pinned the one action ref to a commit SHA and added Dependabot to bump it**
   ([#1](https://github.com/spore-host/pegasus-spawn/issues/1)). `actions/checkout@v4`
   was a floating tag, and a tag is mutable — `@v4` means "whatever `v4` points at
@@ -46,17 +81,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     parser that stops matching fails instead of passing vacuously.
   No behaviour change — CI wiring and tests only.
 
-### Added
-- Initial feasibility prototype. `bin/pegasus-spawn-run` — a per-job wrapper that
-  translates a Pegasus job invocation into a spawn `TaskSpec` and calls
-  `spawn task run --wait`, so a chosen Pegasus 5.x transformation runs on an
-  ephemeral spore.host instance (one per job, auto-terminated) using only
-  documented Pegasus seams (Transformation Catalog `pfn`=wrapper, `site=local`,
-  `gridstart=NoGridStart`) — no custom scheduler/LRMS.
-- `examples/workflow.py` — generates a two-job Pegasus 5.x workflow with
-  spawn-backed transformations (drop-in pattern: add these transformations to an
-  existing Pegasus workflow).
-- DAGMan-composition CI test (`tests/`): a real Pegasus 5.x + single-machine
-  HTCondor (minicondor) container runs the example under `pegasus-plan --submit`
-  with a stubbed `spawn` (no AWS), asserting DAGMan tracks node success/failure by
-  the wrapper's exit code (and RETRY on nonzero).
