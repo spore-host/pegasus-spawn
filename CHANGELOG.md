@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-04
+
 ### Added
 
 - **`SPAWN_COST_LIMIT`: a per-job spend cap** (#5). TTL was the only ceiling on a job,
@@ -81,3 +83,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     parser that stops matching fails instead of passing vacuously.
   No behaviour change — CI wiring and tests only.
 
+[Unreleased]: https://github.com/spore-host/pegasus-spawn/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/spore-host/pegasus-spawn/releases/tag/v0.1.0
