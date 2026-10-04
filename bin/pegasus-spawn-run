@@ -57,6 +57,45 @@ def _fail(msg, code=2):
     sys.exit(code)
 
 
+def _lifecycle():
+    """The lifecycle block: TTL, plus a cost cap when SPAWN_COST_LIMIT is set (#5).
+
+    TTL bounds a job in TIME, not money, and spored enforces the two
+    INDEPENDENTLY — first limit to fire wins — so a cost cap is a genuine second
+    belt. Without it the only ceiling is the TTL, defaulting to 4h, so a workflow
+    of N jobs has a worst case of N x 4h x the instance rate.
+
+    The failure it catches is a job that HANGS rather than fails: it produces no
+    exit status for Pegasus to retry or fail on, so it bills until the TTL
+    expires. Pegasus's local-site throttling bounds CONCURRENCY, not spend, so it
+    is not a substitute.
+
+    Omitted when unset so spawn's own default still applies. A non-numeric value
+    degrades to "bounded by TTL only" with a warning rather than failing the job:
+    it arrives as an environment string, and a typo should not kill a workflow
+    that is otherwise fine.
+    """
+    lifecycle = {
+        "ttl": os.environ.get("SPAWN_TTL", "4h").strip() or "4h",
+        "on_complete": "terminate",
+    }
+    raw = (os.environ.get("SPAWN_COST_LIMIT") or "").strip()
+    if not raw:
+        return lifecycle
+    try:
+        value = float(raw)
+    except ValueError:
+        print(
+            f"pegasus-spawn: ignoring non-numeric SPAWN_COST_LIMIT {raw!r}; "
+            "the job will be bounded by TTL only",
+            file=sys.stderr,
+        )
+        return lifecycle
+    if value > 0:
+        lifecycle["cost_limit"] = value
+    return lifecycle
+
+
 def _manifests(raw, forward):
     """Parse a ;-separated list of 'a>b' pairs into TaskSpec manifest dicts.
 
@@ -105,10 +144,7 @@ def build_spec(task_name, job_args):
         "resources": resources,
         "inputs": _manifests(os.environ.get("PEGASUS_SPAWN_INPUTS"), forward=True),
         "outputs": _manifests(os.environ.get("PEGASUS_SPAWN_OUTPUTS"), forward=False),
-        "lifecycle": {
-            "ttl": os.environ.get("SPAWN_TTL", "4h").strip() or "4h",
-            "on_complete": "terminate",
-        },
+        "lifecycle": _lifecycle(),
     }
     if os.environ.get("PEGASUS_SPAWN_CONTAINER"):
         spec["container"] = os.environ["PEGASUS_SPAWN_CONTAINER"]
